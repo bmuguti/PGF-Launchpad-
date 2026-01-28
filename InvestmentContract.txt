@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+
+interface IMembershipNFT2 {
+    function balanceOf(address owner) external view returns (uint256);
+
+    function mint(address to) external;
+}
+
+contract InvestmentContract is Ownable, ReentrancyGuard, Pausable {
+    using SafeERC20 for IERC20;
+    IMembershipNFT2 public membership;
+
+    mapping(address => bool) public allowedTokens;
+    mapping(address => uint256) private investedAmountPerUser;
+    uint256 public totalInvestedAmount;
+    uint256 public investmentRatio = 90;
+    uint256 public feeRatio = 10;
+
+    address public investmentWallet;
+    address public feesWallet;
+
+    event InvestmentReceived(
+        address indexed user,
+        address indexed token,
+        uint256 amount,
+        uint256 investmentShare,
+        uint256 feeShare
+    );
+    event RatiosUpdated(uint256 newInvestmentRatio, uint256 newFeeRatio);
+    event TokenAllowanceUpdated(address token, bool allowed);
+
+    constructor(
+        address _investmentWallet,
+        address _feesWallet,
+        address[] memory _allowedTokens
+    ) Ownable(msg.sender) {
+        require(
+            _investmentWallet != address(0),
+            "Invalid investment wallet address"
+        );
+        require(_feesWallet != address(0), "Invalid fees wallet address");
+
+        investmentWallet = _investmentWallet;
+        feesWallet = _feesWallet;
+
+        for (uint i = 0; i < _allowedTokens.length; i++) {
+            allowedTokens[_allowedTokens[i]] = true;
+            emit TokenAllowanceUpdated(_allowedTokens[i], true);
+        }
+    }
+
+    function setInvestmentWallet(address _investmentWallet) external onlyOwner {
+        require(
+            _investmentWallet != address(0),
+            "Invalid investment wallet address"
+        );
+        investmentWallet = _investmentWallet;
+    }
+
+    function setFeesWallet(address _feesWallet) external onlyOwner {
+        require(_feesWallet != address(0), "Invalid fees wallet address");
+        feesWallet = _feesWallet;
+    }
+
+    function pause() public onlyOwner {
+        _pause();
+    }
+
+    function unpause() public onlyOwner {
+        _unpause();
+    }
+
+    function setMembershipNFTAddress(
+        address _membershipNFTAddress
+    ) external onlyOwner {
+        require(
+            _membershipNFTAddress != address(0),
+            "Membership NFT address cannot be the zero address"
+        );
+        membership = IMembershipNFT2(_membershipNFTAddress);
+    }
+
+    function allowToken(address _token, bool _allowed) external onlyOwner {
+        allowedTokens[_token] = _allowed;
+        emit TokenAllowanceUpdated(_token, _allowed);
+    }
+
+    function setRatios(
+        uint256 _investmentRatio,
+        uint256 _feeRatio
+    ) external onlyOwner {
+        require(_investmentRatio + _feeRatio == 100, "Ratios must sum to 100%");
+        investmentRatio = _investmentRatio;
+        feeRatio = _feeRatio;
+        emit RatiosUpdated(_investmentRatio, _feeRatio);
+    }
+
+    function invest(
+        address _token,
+        uint256 _amount
+    ) external nonReentrant whenNotPaused {
+        require(allowedTokens[_token], "Token is not allowed");
+
+        uint256 feeShare = (_amount * feeRatio) / 100;
+        uint256 investmentShare = _amount - feeShare;
+
+        require(
+            IERC20(_token).transferFrom(
+                msg.sender,
+                investmentWallet,
+                investmentShare
+            ),
+            "Investment transfer failed"
+        );
+        require(
+            IERC20(_token).transferFrom(msg.sender, feesWallet, feeShare),
+            "Fee transfer failed"
+        );
+
+        investedAmountPerUser[msg.sender] += _amount;
+        totalInvestedAmount += _amount;
+
+        if (membership.balanceOf(msg.sender) == 0) {
+            membership.mint(msg.sender);
+        }
+
+        emit InvestmentReceived(
+            msg.sender,
+            _token,
+            _amount,
+            investmentShare,
+            feeShare
+        );
+    }
+
+    function getUserInvestedAmount(
+        address _user
+    ) external view returns (uint256) {
+        return investedAmountPerUser[_user];
+    }
+}
